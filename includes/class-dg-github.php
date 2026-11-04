@@ -266,17 +266,68 @@ class DG_GitHub {
 	}
 
 	/**
-	 * Descarga el zipball de una referencia a un archivo local.
+	 * Descarga el zipball de una referencia a un archivo local de forma optimizada.
+	 *
+	 * Utiliza cURL nativo con streaming en búfer de 128KB si está disponible para máxima velocidad,
+	 * o recurre a la HTTP API de WordPress como respaldo.
 	 *
 	 * @param string $owner Propietario.
 	 * @param string $repo  Repositorio.
-	 * @param string $ref   Referencia (idealmente un SHA).
+	 * @param string $ref   Referencia (rama, tag o SHA).
 	 * @param string $dest  Archivo de destino.
 	 * @return true|WP_Error
 	 */
 	public function download_zip( $owner, $repo, $ref, $dest ) {
+		$url = self::API . self::repo_path( $owner, $repo ) . '/zipball/' . self::encode_ref( $ref );
+
+		// 1. Descarga ultrarrápida vía cURL nativo en streaming directo a disco.
+		if ( function_exists( 'curl_init' ) ) {
+			$fp = @fopen( $dest, 'w+b' );
+			if ( $fp ) {
+				$ch           = curl_init();
+				$curl_headers = array();
+				foreach ( $this->headers() as $k => $v ) {
+					$curl_headers[] = $k . ': ' . $v;
+				}
+
+				curl_setopt_array(
+					$ch,
+					array(
+						CURLOPT_URL            => $url,
+						CURLOPT_FILE           => $fp,
+						CURLOPT_TIMEOUT        => 180,
+						CURLOPT_CONNECTTIMEOUT => 15,
+						CURLOPT_FOLLOWLOCATION => true,
+						CURLOPT_MAXREDIRS      => 5,
+						CURLOPT_HTTPHEADER     => $curl_headers,
+						CURLOPT_BUFFERSIZE     => 131072, // 128KB buffer para máxima tasa de transferencia.
+						CURLOPT_SSL_VERIFYPEER => true,
+						CURLOPT_FAILONERROR    => false,
+					)
+				);
+
+				$exec_res = curl_exec( $ch );
+				$code     = (int) curl_getinfo( $ch, CURLINFO_HTTP_CODE );
+				curl_close( $ch );
+				fclose( $fp );
+
+				if ( $exec_res && 200 === $code && file_exists( $dest ) && filesize( $dest ) > 0 ) {
+					return true;
+				}
+
+				if ( 200 !== $code && $code > 0 ) {
+					$body = file_exists( $dest ) ? json_decode( (string) file_get_contents( $dest ), true ) : null;
+					@unlink( $dest );
+					return $this->error_from_response( $code, array(), $body );
+				}
+
+				@unlink( $dest );
+			}
+		}
+
+		// 2. Respaldo estándar con wp_remote_get.
 		$response = wp_remote_get(
-			self::API . self::repo_path( $owner, $repo ) . '/zipball/' . self::encode_ref( $ref ),
+			$url,
 			array(
 				'timeout'     => 300,
 				'stream'      => true,

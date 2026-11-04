@@ -313,7 +313,7 @@
 		updateProgressBarUI(5, 'Iniciando conexión con GitHub...', 'connect');
 		$('#dg-progress-modal').fadeIn(200);
 
-		// Polling cada 350ms para leer el progreso
+		// Polling reactivo cada 200ms para leer el progreso
 		progressPollInterval = setInterval(function () {
 			$.get(despliegaGit.ajaxUrl, {
 				action: 'dg_get_progress',
@@ -325,7 +325,7 @@
 					updateProgressBarUI(d.percent, d.message, d.step);
 				}
 			});
-		}, 350);
+		}, 200);
 
 		// Ejecución principal del staging
 		$.post(despliegaGit.ajaxUrl, {
@@ -344,7 +344,7 @@
 						.find('.dg-step-marker').html('<span class="dashicons dashicons-yes"></span>');
 
 					setTimeout(function () {
-						$('#dg-progress-modal').fadeOut(200, function () {
+						$('#dg-progress-modal').fadeOut(150, function () {
 							// Abrir la previsualización
 							var st = res.data.staged;
 							$('#dg-prev-detected-type').text(st.effective_type.toUpperCase());
@@ -375,7 +375,7 @@
 
 							$('#dg-preview-modal').fadeIn(200);
 						});
-					}, 500);
+					}, 180);
 				} else {
 					$('#dg-progress-modal').fadeOut(150);
 					alert(res.data.message || 'Error durante la preparación.');

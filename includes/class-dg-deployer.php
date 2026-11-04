@@ -116,7 +116,14 @@ class DG_Deployer {
 	}
 
 	/**
-	 * Descarga el zip del repositorio en staging y analiza su estructura.
+	 * Descarga el zip del repositorio en staging y analiza su estructura a máxima velocidad.
+	 *
+	 * Optimizaciones aplicadas:
+	 * - Descarga directa del zipball sin esperas previas innecesarias.
+	 * - Detección del SHA del commit directamente de las cabeceras/raíz del ZIP.
+	 * - Extracción y análisis en un único pase (un solo recorrido en memoria).
+	 * - Omisión de archivos excluidos (.git, node_modules) antes de escribirlos en disco.
+	 * - Sin doble lectura ni movimientos de carpetas en el sistema de archivos.
 	 *
 	 * @param array  $project Datos del proyecto.
 	 * @param string $ref     Rama o commit a descargar.
@@ -125,54 +132,33 @@ class DG_Deployer {
 	public static function stage( array $project, $ref = '' ) {
 		self::ensure_dirs();
 
-		self::set_progress(
-			$project['id'],
-			15,
-			'connect',
-			__( 'Conectando con la API de GitHub y verificando credenciales...', 'despliegagit' )
-		);
-
 		if ( empty( $ref ) ) {
 			$ref = ! empty( $project['branch'] ) ? $project['branch'] : 'main';
 		}
+
+		$paths     = self::paths();
+		$stage_dir = $paths['staging'] . '/' . $project['id'];
+		$tmp_zip   = $paths['tmp'] . '/' . $project['id'] . '-' . time() . '.zip';
+
+		self::set_progress(
+			$project['id'],
+			20,
+			'connect',
+			__( 'Conectando con GitHub y preparando descarga...', 'despliegagit' )
+		);
 
 		$token  = DG_Projects::token_for( $project );
 		$github = new DG_GitHub( $token );
 
 		self::set_progress(
 			$project['id'],
-			30,
-			'commit',
-			__( 'Obteniendo detalles del último commit en la rama...', 'despliegagit' )
-		);
-
-		// Obtener información del commit para trazabilidad.
-		$commit_info = $github->get_commit( $project['owner'], $project['repo'], $ref );
-		if ( is_wp_error( $commit_info ) ) {
-			// Si falla por commit, intentamos continuar con el ref tal cual.
-			$commit_info = array(
-				'sha'     => $ref,
-				'message' => 'Despliegue manual de ' . $ref,
-				'author'  => '',
-				'date'    => current_time( 'mysql' ),
-				'url'     => '',
-			);
-		}
-
-		$paths    = self::paths();
-		$stage_id = $project['id'] . '-' . substr( md5( $commit_info['sha'] . time() ), 0, 8 );
-		$tmp_zip  = $paths['tmp'] . '/' . $stage_id . '.zip';
-		$stage_dir = $paths['staging'] . '/' . $project['id'];
-
-		self::set_progress(
-			$project['id'],
-			50,
+			45,
 			'download',
 			__( 'Descargando paquete comprimido del repositorio (.zip)...', 'despliegagit' )
 		);
 
-		// Descargar archivo ZIP.
-		$downloaded = $github->download_zip( $project['owner'], $project['repo'], $commit_info['sha'], $tmp_zip );
+		// Descarga directa a alta velocidad mediante streaming cURL.
+		$downloaded = $github->download_zip( $project['owner'], $project['repo'], $ref, $tmp_zip );
 		if ( is_wp_error( $downloaded ) ) {
 			self::clear_progress( $project['id'] );
 			return $downloaded;
@@ -180,67 +166,66 @@ class DG_Deployer {
 
 		self::set_progress(
 			$project['id'],
-			70,
+			75,
 			'unzip',
-			__( 'Descomprimiendo y verificando integridad de archivos...', 'despliegagit' )
+			__( 'Extrayendo archivos y analizando componentes en memoria...', 'despliegagit' )
 		);
 
 		// Limpiar staging anterior del proyecto.
 		self::rmdir_recursive( $stage_dir );
 		wp_mkdir_p( $stage_dir );
 
-		// Extraer el zipball.
-		$unzip_result = self::unzip( $tmp_zip, $stage_dir );
+		// Extracción optimizada de un solo paso: filtra exclusiones, subdirectorios y calcula estadísticas.
+		$inspect_result = self::fast_unzip_and_inspect( $tmp_zip, $stage_dir, $project );
 		@unlink( $tmp_zip );
 
-		if ( is_wp_error( $unzip_result ) ) {
+		if ( is_wp_error( $inspect_result ) ) {
 			self::clear_progress( $project['id'] );
-			return $unzip_result;
+			return $inspect_result;
 		}
-
-		// GitHub mete todo dentro de un directorio raíz: owner-repo-sha/. Lo aplanamos.
-		self::flatten_single_root_dir( $stage_dir );
 
 		self::set_progress(
 			$project['id'],
-			85,
+			90,
 			'inspect',
-			__( 'Analizando estructura de carpetas, temas, plugins o estáticos...', 'despliegagit' )
+			__( 'Obteniendo detalles del commit y preparando previsualización...', 'despliegagit' )
 		);
 
-		// Si se configuró un subdirectorio específico (ej: dist/, build/), lo usamos como raíz.
-		$effective_dir = $stage_dir;
-		if ( ! empty( $project['subdir'] ) ) {
-			$candidate = trailingslashit( $stage_dir ) . trim( $project['subdir'], '/\\' );
-			if ( is_dir( $candidate ) ) {
-				$effective_dir = $candidate;
-			}
+		$detected_sha = ! empty( $inspect_result['sha'] ) ? $inspect_result['sha'] : $ref;
+
+		// Obtener información del commit (o generar una estructura válida rápida si la API no responde).
+		$commit_info = array(
+			'sha'     => $detected_sha,
+			'message' => sprintf( __( 'Despliegue de %s (#%s)', 'despliegagit' ), $ref, substr( $detected_sha, 0, 7 ) ),
+			'author'  => '',
+			'date'    => current_time( 'mysql' ),
+			'url'     => 'https://github.com/' . $project['owner'] . '/' . $project['repo'] . '/commit/' . $detected_sha,
+		);
+
+		$commit_fetch = $github->get_commit( $project['owner'], $project['repo'], $detected_sha );
+		if ( ! is_wp_error( $commit_fetch ) && ! empty( $commit_fetch['sha'] ) ) {
+			$commit_info = $commit_fetch;
 		}
 
-		// Inspeccionar y detectar el tipo de proyecto.
-		$inspection = self::inspect_directory( $effective_dir );
-		$type       = $project['type'];
+		$type = $project['type'];
 		if ( 'auto' === $type || empty( $type ) ) {
-			$type = $inspection['detected_type'];
+			$type = $inspect_result['detected_type'];
 		}
-
-		// Recopilar lista de archivos y estadísticas.
-		$files_tree = self::list_files_summary( $effective_dir, 150 );
 
 		$stage_data = array(
-			'stage_id'      => $stage_id,
-			'timestamp'     => time(),
-			'ref'           => $ref,
-			'commit'        => $commit_info,
-			'detected_type' => $inspection['detected_type'],
-			'effective_type'=> $type,
-			'suggested_slug'=> ! empty( $project['slug'] ) ? $project['slug'] : $inspection['suggested_slug'],
-			'file_count'    => $inspection['file_count'],
-			'total_bytes'   => $inspection['total_bytes'],
-			'has_index_html'=> $inspection['has_index_html'],
-			'has_style_css' => $inspection['has_style_css'],
-			'has_plugin_php'=> $inspection['has_plugin_php'],
-			'files'         => $files_tree,
+			'stage_id'       => $project['id'] . '-' . substr( md5( $detected_sha . time() ), 0, 8 ),
+			'timestamp'      => time(),
+			'ref'            => $ref,
+			'commit'         => $commit_info,
+			'detected_type'  => $inspect_result['detected_type'],
+			'effective_type' => $type,
+			'suggested_slug' => ! empty( $project['slug'] ) ? $project['slug'] : $inspect_result['suggested_slug'],
+			'file_count'     => $inspect_result['file_count'],
+			'total_bytes'    => $inspect_result['total_bytes'],
+			'has_index_html' => $inspect_result['has_index_html'],
+			'has_style_css'  => $inspect_result['has_style_css'],
+			'has_plugin_php' => $inspect_result['has_plugin_php'],
+			'files'          => $inspect_result['files'],
 		);
 
 		DG_Projects::update(
@@ -255,10 +240,186 @@ class DG_Deployer {
 			$project['id'],
 			100,
 			'ready',
-			__( '¡Importación completada! Listo para previsualizar.', 'despliegagit' )
+			__( '¡Importación completada! Abriendo previsualización...', 'despliegagit' )
 		);
 
 		return $stage_data;
+	}
+
+	/**
+	 * Extrae y analiza un ZIP de GitHub en un solo paso ultrarrápido.
+	 *
+	 * @param string $zip_path Archivo zip.
+	 * @param string $dest_dir Directorio destino para staging.
+	 * @param array  $project  Configuración del proyecto.
+	 * @return array|WP_Error
+	 */
+	public static function fast_unzip_and_inspect( $zip_path, $dest_dir, array $project ) {
+		if ( ! class_exists( 'ZipArchive' ) ) {
+			return self::unzip( $zip_path, $dest_dir );
+		}
+
+		$zip = new ZipArchive();
+		$res = $zip->open( $zip_path );
+		if ( true !== $res ) {
+			return new WP_Error( 'dg_zip_open', __( 'No se pudo abrir el archivo ZIP descargado.', 'despliegagit' ) );
+		}
+
+		$num_files = $zip->numFiles;
+		if ( 0 === $num_files ) {
+			$zip->close();
+			return new WP_Error( 'dg_zip_empty', __( 'El archivo ZIP está vacío.', 'despliegagit' ) );
+		}
+
+		// 1. Detectar el prefijo raíz (GitHub siempre crea owner-repo-sha/).
+		$root_prefix = '';
+		for ( $i = 0; $i < min( 20, $num_files ); $i++ ) {
+			$name = $zip->getNameIndex( $i );
+			if ( false !== strpos( $name, '/' ) ) {
+				$parts       = explode( '/', $name );
+				$root_prefix = $parts[0] . '/';
+				break;
+			}
+		}
+
+		// Extraer el commit SHA del nombre de la carpeta raíz si coincide.
+		$detected_sha = '';
+		if ( ! empty( $root_prefix ) && preg_match( '/-([0-9a-f]{7,40})\/$/i', $root_prefix, $matches ) ) {
+			$detected_sha = $matches[1];
+		}
+
+		// 2. Prefijo efectivo según si hay subdirectorio configurado (ej: dist/, build/).
+		$effective_prefix = $root_prefix;
+		if ( ! empty( $project['subdir'] ) ) {
+			$sub = trim( str_replace( '\\', '/', $project['subdir'] ), '/' );
+			if ( '' !== $sub ) {
+				$effective_prefix .= $sub . '/';
+			}
+		}
+
+		$exclude_patterns = DG_Projects::patterns( $project['exclude'] );
+
+		// Métricas e inspección simultáneas.
+		$file_count     = 0;
+		$total_bytes    = 0;
+		$has_index_html = false;
+		$has_style_css  = false;
+		$has_plugin_php = false;
+		$is_theme       = false;
+		$files_tree     = array();
+
+		for ( $i = 0; $i < $num_files; $i++ ) {
+			$entry_name = $zip->getNameIndex( $i );
+
+			// Protección Zip Slip.
+			if ( false !== strpos( $entry_name, '../' ) || false !== strpos( $entry_name, '..\\' ) ) {
+				$zip->close();
+				return new WP_Error( 'dg_zip_slip', __( 'El archivo ZIP contiene rutas relativas inseguras.', 'despliegagit' ) );
+			}
+
+			// Solo procesar archivos dentro del prefijo efectivo.
+			if ( '' !== $effective_prefix && 0 !== strpos( $entry_name, $effective_prefix ) ) {
+				continue;
+			}
+
+			$rel_path = substr( $entry_name, strlen( $effective_prefix ) );
+			if ( '' === $rel_path || '/' === $rel_path ) {
+				continue;
+			}
+
+			$is_dir = ( '/' === substr( $rel_path, -1 ) );
+			$clean_rel_path = rtrim( $rel_path, '/' );
+
+			// Comprobar exclusiones.
+			if ( self::matches_patterns( $clean_rel_path, $exclude_patterns ) ) {
+				continue;
+			}
+
+			$target_path = $dest_dir . '/' . $clean_rel_path;
+
+			if ( $is_dir ) {
+				wp_mkdir_p( $target_path );
+				if ( count( $files_tree ) < 100 ) {
+					$files_tree[] = array(
+						'path' => $clean_rel_path,
+						'type' => 'dir',
+						'size' => 0,
+					);
+				}
+				continue;
+			}
+
+			// Es un archivo:
+			$stat = $zip->statIndex( $i );
+			$size = isset( $stat['size'] ) ? (int) $stat['size'] : 0;
+
+			$file_count++;
+			$total_bytes += $size;
+
+			// Crear directorio contenedor en disco.
+			wp_mkdir_p( dirname( $target_path ) );
+
+			// Extraer con stream de alto rendimiento.
+			$fp_in  = $zip->getStream( $entry_name );
+			$fp_out = @fopen( $target_path, 'wb' );
+			if ( $fp_in && $fp_out ) {
+				stream_copy_to_stream( $fp_in, $fp_out );
+				fclose( $fp_in );
+				fclose( $fp_out );
+			}
+
+			// Detección de tipo en los archivos clave del nivel superior.
+			$basename = basename( $clean_rel_path );
+			$dirname  = dirname( $clean_rel_path );
+
+			if ( '.' === $dirname || '' === $dirname ) {
+				if ( 'index.html' === $basename || 'index.htm' === $basename ) {
+					$has_index_html = true;
+				} elseif ( 'style.css' === $basename ) {
+					$has_style_css = true;
+					$content       = (string) file_get_contents( $target_path, false, null, 0, 4096 );
+					if ( preg_match( '/Theme Name\s*:/i', $content ) ) {
+						$is_theme = true;
+					}
+				} elseif ( 'php' === pathinfo( $basename, PATHINFO_EXTENSION ) && ! $is_theme ) {
+					$content = (string) file_get_contents( $target_path, false, null, 0, 4096 );
+					if ( preg_match( '/Plugin Name\s*:/i', $content ) ) {
+						$has_plugin_php = true;
+					}
+				}
+			}
+
+			if ( count( $files_tree ) < 100 ) {
+				$files_tree[] = array(
+					'path' => $clean_rel_path,
+					'type' => 'file',
+					'size' => $size,
+				);
+			}
+		}
+
+		$zip->close();
+
+		$detected = 'static';
+		if ( $is_theme ) {
+			$detected = 'theme';
+		} elseif ( $has_plugin_php ) {
+			$detected = 'plugin';
+		} elseif ( $has_index_html ) {
+			$detected = 'static';
+		}
+
+		return array(
+			'sha'            => $detected_sha,
+			'detected_type'  => $detected,
+			'suggested_slug' => DG_Projects::sanitize_slug( $project['repo'] ),
+			'has_index_html' => $has_index_html,
+			'has_style_css'  => $has_style_css,
+			'has_plugin_php' => $has_plugin_php,
+			'file_count'     => $file_count,
+			'total_bytes'    => $total_bytes,
+			'files'          => $files_tree,
+		);
 	}
 
 	/**
