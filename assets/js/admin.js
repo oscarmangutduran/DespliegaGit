@@ -412,6 +412,8 @@
 				return;
 			}
 
+			var $btn = $(this);
+			$btn.prop('disabled', true);
 			showLoading(despliegaGit.strings.deploying);
 
 			$.post(despliegaGit.ajaxUrl, {
@@ -420,10 +422,10 @@
 				id: currentStagedProjectId
 			})
 				.done(function (res) {
+					$btn.prop('disabled', false);
 					hideLoading();
 					if (res.success) {
 						$('#dg-preview-modal').fadeOut(150);
-						alert(res.data.message);
 						if (res.data.public_url) {
 							window.location.href = res.data.public_url;
 						} else {
@@ -434,6 +436,7 @@
 					}
 				})
 				.fail(function () {
+					$btn.prop('disabled', false);
 					hideLoading();
 					alert('Error al publicar el proyecto.');
 				});

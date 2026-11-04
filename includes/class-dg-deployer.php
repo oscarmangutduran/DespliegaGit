@@ -423,7 +423,13 @@ class DG_Deployer {
 	}
 
 	/**
-	 * Publica definitivamente el staging en su ubicación final.
+	 * Publica definitivamente el staging en su ubicación final de forma atómica y ultrarrápida.
+	 *
+	 * Optimizaciones aplicadas:
+	 * - Despliegue atómico mediante renombrado de directorios (instantáneo en vez de copiar miles de archivos).
+	 * - Si el destino ya existía, se preservan archivos requeridos y se mueve en milisegundos.
+	 * - Copias de seguridad comprimidas en modo Store de alta velocidad (sin atascar la CPU).
+	 * - Comprobación inteligente de reglas de reescritura para evitar llamadas costosas a flush_rewrite_rules().
 	 *
 	 * @param array       $project     Proyecto.
 	 * @param string      $type_override Tipo forzado opcional.
@@ -434,7 +440,6 @@ class DG_Deployer {
 	public static function deploy( array $project, $type_override = '', $slug_override = '', $source = 'manual' ) {
 		$staged = $project['staged'];
 		if ( empty( $staged ) || ! is_array( $staged ) ) {
-			// Si no está staged, intentamos hacer staging primero.
 			$staged = self::stage( $project );
 			if ( is_wp_error( $staged ) ) {
 				return $staged;
@@ -473,30 +478,61 @@ class DG_Deployer {
 			return $target_dir;
 		}
 
-		// Crear copia de seguridad previa si el destino ya existía.
-		$backup_file = '';
+		$backup_file        = '';
+		$preserve_patterns  = DG_Projects::patterns( $project['preserve'] );
+		$exclude_patterns   = DG_Projects::patterns( $project['exclude'] );
+		$deployed_via_swap  = false;
+
+		// 1. DESPLIEGUE ATÓMICO ULTRA RÁPIDO (Atomic Directory Swap).
 		if ( is_dir( $target_dir ) ) {
-			$backup_file = self::create_backup( $project['id'], $target_dir );
-		}
+			$temp_prev = $paths['tmp'] . '/prev-' . $project['id'] . '-' . time();
+			if ( @rename( $target_dir, $temp_prev ) ) {
+				// Si hay archivos a preservar (.env, subidas locales), copiarlos de la versión previa a la nueva.
+				if ( ! empty( $preserve_patterns ) ) {
+					self::copy_preserved_files( $temp_prev, $stage_dir, $preserve_patterns );
+				}
 
-		// Lista de exclusiones y preservaciones.
-		$exclude_patterns  = DG_Projects::patterns( $project['exclude'] );
-		$preserve_patterns = DG_Projects::patterns( $project['preserve'] );
-
-		// Realizar el despliegue copiando archivos.
-		$deploy_res = self::sync_directories( $stage_dir, $target_dir, $exclude_patterns, $preserve_patterns );
-		if ( is_wp_error( $deploy_res ) ) {
-			// Si falla, intentamos restaurar el backup si existía.
-			if ( ! empty( $backup_file ) && file_exists( $backup_file ) ) {
-				self::restore_backup_file( $backup_file, $target_dir );
+				// Intercambio instantáneo: el staging pasa a ser la web en vivo.
+				if ( @rename( $stage_dir, $target_dir ) ) {
+					$deployed_via_swap = true;
+					// Generar copia de seguridad rápida de la versión previa.
+					$keep = (int) DG_Settings::get( 'keep_backups' );
+					if ( $keep > 0 ) {
+						$backup_file = self::create_backup( $project['id'], $temp_prev );
+					}
+					self::rmdir_recursive( $temp_prev );
+				} else {
+					// Si falla el renombrado, restaurar la versión anterior y usar fallback.
+					@rename( $temp_prev, $target_dir );
+				}
 			}
-			return $deploy_res;
+		} else {
+			wp_mkdir_p( dirname( $target_dir ) );
+			if ( @rename( $stage_dir, $target_dir ) ) {
+				$deployed_via_swap = true;
+			}
 		}
 
-		// Limpiar el staging tras el despliegue exitoso.
-		self::rmdir_recursive( $paths['staging'] . '/' . $project['id'] );
+		// 2. FALLBACK si el swap atómico no fue admitido por el sistema de archivos.
+		if ( ! $deployed_via_swap ) {
+			if ( is_dir( $target_dir ) ) {
+				$backup_file = self::create_backup( $project['id'], $target_dir );
+			}
+			$deploy_res = self::sync_directories( $stage_dir, $target_dir, $exclude_patterns, $preserve_patterns );
+			if ( is_wp_error( $deploy_res ) ) {
+				if ( ! empty( $backup_file ) && file_exists( $backup_file ) ) {
+					self::restore_backup_file( $backup_file, $target_dir );
+				}
+				return $deploy_res;
+			}
+		}
 
-		// Actualizar metadatos del proyecto.
+		// Limpiar staging residual si aún existe.
+		if ( file_exists( $paths['staging'] . '/' . $project['id'] ) ) {
+			self::rmdir_recursive( $paths['staging'] . '/' . $project['id'] );
+		}
+
+		// Actualizar metadatos y rotación de copias de seguridad.
 		$backups = (array) $project['backups'];
 		if ( ! empty( $backup_file ) ) {
 			array_unshift(
@@ -507,7 +543,6 @@ class DG_Deployer {
 					'commit'    => ! empty( $staged['commit']['sha'] ) ? substr( $staged['commit']['sha'], 0, 7 ) : '',
 				)
 			);
-			// Rotación según keep_backups.
 			$keep = (int) DG_Settings::get( 'keep_backups' );
 			if ( count( $backups ) > $keep ) {
 				$removed = array_splice( $backups, $keep );
@@ -532,7 +567,6 @@ class DG_Deployer {
 			)
 		);
 
-		// Registrar en historial.
 		DG_Projects::add_history(
 			$project['id'],
 			array(
@@ -544,9 +578,14 @@ class DG_Deployer {
 			)
 		);
 
-		// Refrescar reglas si es un sitio estático nuevo.
+		// Comprobar si la regla de reescritura ya existe en base de datos; solo refrescar si falta.
 		if ( 'static' === $type ) {
-			flush_rewrite_rules( false );
+			$rules = get_option( 'rewrite_rules' );
+			$expected_regex = '^' . preg_quote( $slug, '^' ) . '(?:/(.*))?/?$';
+			if ( ! is_array( $rules ) || ! isset( $rules[ $expected_regex ] ) ) {
+				DG_Static_Server::register_rules();
+				flush_rewrite_rules( false );
+			}
 		}
 
 		return array(
@@ -556,6 +595,34 @@ class DG_Deployer {
 			'target_dir' => $target_dir,
 			'public_url' => $public_url,
 		);
+	}
+
+	/**
+	 * Copia únicamente los archivos preservados de la versión anterior al nuevo staging.
+	 *
+	 * @param string $source_dir Carpeta previa.
+	 * @param string $dest_dir   Carpeta de destino.
+	 * @param array  $patterns   Patrones a preservar.
+	 */
+	private static function copy_preserved_files( $source_dir, $dest_dir, array $patterns ) {
+		if ( ! is_dir( $source_dir ) || empty( $patterns ) ) {
+			return;
+		}
+
+		$it = new RecursiveIteratorIterator(
+			new RecursiveDirectoryIterator( $source_dir, RecursiveDirectoryIterator::SKIP_DOTS ),
+			RecursiveIteratorIterator::LEAVES_ONLY
+		);
+
+		foreach ( $it as $file ) {
+			$rel = substr( $file->getPathname(), strlen( $source_dir ) + 1 );
+			$rel_norm = str_replace( '\\', '/', $rel );
+			if ( self::matches_patterns( $rel_norm, $patterns ) ) {
+				$target = $dest_dir . '/' . $rel;
+				wp_mkdir_p( dirname( $target ) );
+				@copy( $file->getPathname(), $target );
+			}
+		}
 	}
 
 	/**
@@ -654,7 +721,7 @@ class DG_Deployer {
 	}
 
 	/**
-	 * Crea un backup ZIP del directorio existente antes de sobreescribir.
+	 * Crea un backup ZIP del directorio existente antes de sobreescribir (modo Store ultrarrápido).
 	 *
 	 * @param string $project_id ID del proyecto.
 	 * @param string $dir        Directorio a respaldar.
@@ -672,11 +739,16 @@ class DG_Deployer {
 					new RecursiveDirectoryIterator( $dir, RecursiveDirectoryIterator::SKIP_DOTS ),
 					RecursiveIteratorIterator::LEAVES_ONLY
 				);
+				$i = 0;
 				foreach ( $files as $file ) {
 					if ( ! $file->isDir() ) {
 						$file_path     = $file->getRealPath();
-						$relative_path = substr( $file_path, strlen( $dir ) + 1 );
+						$relative_path = str_replace( '\\', '/', substr( $file_path, strlen( $dir ) + 1 ) );
 						$zip->addFile( $file_path, $relative_path );
+						if ( method_exists( $zip, 'setCompressionIndex' ) ) {
+							$zip->setCompressionIndex( $i, ZipArchive::CM_STORE );
+						}
+						$i++;
 					}
 				}
 				$zip->close();
@@ -770,7 +842,7 @@ class DG_Deployer {
 	}
 
 	/**
-	 * Copia archivos preservando o excluyendo patrones.
+	 * Copia archivos preservando o excluyendo patrones (versión optimizada con caché de rutas).
 	 *
 	 * @param string $source   Origen.
 	 * @param string $dest     Destino.
@@ -784,6 +856,7 @@ class DG_Deployer {
 		}
 
 		wp_mkdir_p( $dest );
+		$created_dirs = array( $dest => true );
 
 		$iterator = new RecursiveIteratorIterator(
 			new RecursiveDirectoryIterator( $source, RecursiveDirectoryIterator::SKIP_DOTS ),
@@ -795,20 +868,27 @@ class DG_Deployer {
 			$subpath_normalized = str_replace( '\\', '/', $subpath );
 
 			// Comprobar si coincide con exclusiones del repo.
-			if ( self::matches_patterns( $subpath_normalized, $exclude ) ) {
+			if ( ! empty( $exclude ) && self::matches_patterns( $subpath_normalized, $exclude ) ) {
 				continue;
 			}
 
 			$target_item = $dest . '/' . $subpath;
 
 			if ( $item->isDir() ) {
-				wp_mkdir_p( $target_item );
+				if ( ! isset( $created_dirs[ $target_item ] ) ) {
+					wp_mkdir_p( $target_item );
+					$created_dirs[ $target_item ] = true;
+				}
 			} else {
 				// Comprobar si el archivo en destino ya existe y debe ser preservado.
-				if ( file_exists( $target_item ) && self::matches_patterns( $subpath_normalized, $preserve ) ) {
+				if ( ! empty( $preserve ) && file_exists( $target_item ) && self::matches_patterns( $subpath_normalized, $preserve ) ) {
 					continue;
 				}
-				wp_mkdir_p( dirname( $target_item ) );
+				$parent_dir = dirname( $target_item );
+				if ( ! isset( $created_dirs[ $parent_dir ] ) ) {
+					wp_mkdir_p( $parent_dir );
+					$created_dirs[ $parent_dir ] = true;
+				}
 				if ( ! @copy( $item->getPathname(), $target_item ) ) {
 					/* translators: %s: ruta del archivo. */
 					return new WP_Error( 'dg_copy_fail', sprintf( __( 'No se pudo copiar el archivo: %s', 'despliegagit' ), $subpath ) );
