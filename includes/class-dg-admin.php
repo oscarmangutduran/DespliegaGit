@@ -24,6 +24,7 @@ class DG_Admin {
 		add_action( 'wp_ajax_dg_save_project', array( __CLASS__, 'ajax_save_project' ) );
 		add_action( 'wp_ajax_dg_delete_project', array( __CLASS__, 'ajax_delete_project' ) );
 		add_action( 'wp_ajax_dg_stage_project', array( __CLASS__, 'ajax_stage_project' ) );
+		add_action( 'wp_ajax_dg_get_progress', array( __CLASS__, 'ajax_get_progress' ) );
 		add_action( 'wp_ajax_dg_deploy_project', array( __CLASS__, 'ajax_deploy_project' ) );
 		add_action( 'wp_ajax_dg_rollback_project', array( __CLASS__, 'ajax_rollback_project' ) );
 		add_action( 'wp_ajax_dg_save_settings', array( __CLASS__, 'ajax_save_settings' ) );
@@ -282,6 +283,24 @@ class DG_Admin {
 				'preview_url' => $preview_url,
 			)
 		);
+	}
+
+	/**
+	 * AJAX: Consulta el progreso en tiempo real de una importación.
+	 */
+	public static function ajax_get_progress() {
+		check_ajax_referer( 'despliegagit_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => __( 'Permisos insuficientes.', 'despliegagit' ) ) );
+		}
+
+		$id = isset( $_GET['id'] ) ? sanitize_text_field( wp_unslash( $_GET['id'] ) ) : '';
+		if ( empty( $id ) ) {
+			wp_send_json_error( array( 'message' => __( 'ID de proyecto no especificado.', 'despliegagit' ) ) );
+		}
+
+		$progress = DG_Deployer::get_progress( $id );
+		wp_send_json_success( $progress );
 	}
 
 	/**

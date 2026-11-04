@@ -318,9 +318,13 @@ $has_global_token = '' !== DG_Settings::token();
 			</div>
 			<div class="dg-modal-footer">
 				<button type="button" class="button js-close-modal"><?php esc_html_e( 'Cancelar', 'despliegagit' ); ?></button>
-				<button type="button" id="dg-btn-save-project" class="button button-primary">
+				<button type="button" id="dg-btn-save-project" class="button button-secondary">
 					<span class="dashicons dashicons-saved"></span>
-					<?php esc_html_e( 'Guardar Proyecto', 'despliegagit' ); ?>
+					<?php esc_html_e( 'Solo Guardar', 'despliegagit' ); ?>
+				</button>
+				<button type="button" id="dg-btn-save-and-import" class="button button-primary button-hero-sm">
+					<span class="dashicons dashicons-cloud-download"></span>
+					<?php esc_html_e( 'Guardar e Importar Ahora', 'despliegagit' ); ?>
 				</button>
 			</div>
 		</div>
@@ -423,6 +427,81 @@ $has_global_token = '' !== DG_Settings::token();
 			</div>
 			<div class="dg-modal-footer">
 				<button type="button" class="button button-primary js-close-modal"><?php esc_html_e( 'Entendido', 'despliegagit' ); ?></button>
+			</div>
+		</div>
+	</div>
+
+	<!-- MODAL: Progreso de Importación -->
+	<div id="dg-progress-modal" class="dg-modal" style="display:none;">
+		<div class="dg-modal-overlay"></div>
+		<div class="dg-modal-dialog dg-modal-progress">
+			<div class="dg-modal-header dg-progress-header">
+				<div class="dg-progress-header-icon">
+					<span class="dashicons dashicons-cloud-download dg-spin-pulse"></span>
+				</div>
+				<div class="dg-progress-header-text">
+					<h2 id="dg-progress-title"><?php esc_html_e( 'Importando Repositorio...', 'despliegagit' ); ?></h2>
+					<p class="dg-progress-subtitle" id="dg-progress-repo-name">—</p>
+				</div>
+			</div>
+			<div class="dg-modal-body dg-progress-body">
+				<!-- Barra de Progreso Principal -->
+				<div class="dg-progress-bar-container">
+					<div class="dg-progress-bar-track">
+						<div class="dg-progress-bar-fill" id="dg-progress-fill" style="width: 5%;">
+							<div class="dg-progress-bar-glow"></div>
+						</div>
+					</div>
+					<div class="dg-progress-meta">
+						<span class="dg-progress-status-text" id="dg-progress-status-text"><?php esc_html_e( 'Iniciando conexión...', 'despliegagit' ); ?></span>
+						<span class="dg-progress-percent" id="dg-progress-percent">5%</span>
+					</div>
+				</div>
+
+				<!-- Lista de Pasos Visuales -->
+				<div class="dg-progress-steps">
+					<div class="dg-step-item" data-step="connect">
+						<div class="dg-step-marker"><span class="dashicons dashicons-minus"></span></div>
+						<div class="dg-step-info">
+							<strong><?php esc_html_e( 'Conexión con GitHub', 'despliegagit' ); ?></strong>
+							<small><?php esc_html_e( 'Autenticación y comprobación de permisos', 'despliegagit' ); ?></small>
+						</div>
+					</div>
+					<div class="dg-step-item" data-step="commit">
+						<div class="dg-step-marker"><span class="dashicons dashicons-minus"></span></div>
+						<div class="dg-step-info">
+							<strong><?php esc_html_e( 'Verificación de rama y commit', 'despliegagit' ); ?></strong>
+							<small><?php esc_html_e( 'Obtención de metadatos del commit más reciente', 'despliegagit' ); ?></small>
+						</div>
+					</div>
+					<div class="dg-step-item" data-step="download">
+						<div class="dg-step-marker"><span class="dashicons dashicons-minus"></span></div>
+						<div class="dg-step-info">
+							<strong><?php esc_html_e( 'Descarga del código fuente (.zip)', 'despliegagit' ); ?></strong>
+							<small><?php esc_html_e( 'Transferencia del paquete desde los servidores de GitHub', 'despliegagit' ); ?></small>
+						</div>
+					</div>
+					<div class="dg-step-item" data-step="unzip">
+						<div class="dg-step-marker"><span class="dashicons dashicons-minus"></span></div>
+						<div class="dg-step-info">
+							<strong><?php esc_html_e( 'Extracción e integridad', 'despliegagit' ); ?></strong>
+							<small><?php esc_html_e( 'Descompresión segura y validación de archivos', 'despliegagit' ); ?></small>
+						</div>
+					</div>
+					<div class="dg-step-item" data-step="inspect">
+						<div class="dg-step-marker"><span class="dashicons dashicons-minus"></span></div>
+						<div class="dg-step-info">
+							<strong><?php esc_html_e( 'Análisis y Staging', 'despliegagit' ); ?></strong>
+							<small><?php esc_html_e( 'Detección de estructura, estilos y entorno de preview', 'despliegagit' ); ?></small>
+						</div>
+					</div>
+				</div>
+			</div>
+			<div class="dg-modal-footer dg-progress-footer">
+				<small class="dg-progress-hint">
+					<span class="dashicons dashicons-info"></span>
+					<?php esc_html_e( 'No cierres esta ventana mientras la descarga y el análisis están en marcha.', 'despliegagit' ); ?>
+				</small>
 			</div>
 		</div>
 	</div>

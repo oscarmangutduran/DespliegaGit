@@ -58,6 +58,64 @@ class DG_Deployer {
 	}
 
 	/**
+	 * Clave del transient para almacenar el progreso de importación.
+	 *
+	 * @param string $project_id ID del proyecto.
+	 * @return string
+	 */
+	public static function progress_key( $project_id ) {
+		return 'dg_prog_' . sanitize_key( $project_id );
+	}
+
+	/**
+	 * Actualiza el progreso de una importación / preparación.
+	 *
+	 * @param string $project_id ID del proyecto.
+	 * @param int    $percent    Porcentaje (0-100).
+	 * @param string $step       Identificador del paso.
+	 * @param string $message    Mensaje descriptivo.
+	 */
+	public static function set_progress( $project_id, $percent, $step, $message ) {
+		set_transient(
+			self::progress_key( $project_id ),
+			array(
+				'percent' => max( 0, min( 100, (int) $percent ) ),
+				'step'    => sanitize_key( $step ),
+				'message' => sanitize_text_field( $message ),
+				'time'    => time(),
+			),
+			120
+		);
+	}
+
+	/**
+	 * Obtiene el estado actual del progreso.
+	 *
+	 * @param string $project_id ID del proyecto.
+	 * @return array
+	 */
+	public static function get_progress( $project_id ) {
+		$data = get_transient( self::progress_key( $project_id ) );
+		if ( ! is_array( $data ) ) {
+			return array(
+				'percent' => 5,
+				'step'    => 'init',
+				'message' => __( 'Iniciando proceso de importación...', 'despliegagit' ),
+			);
+		}
+		return $data;
+	}
+
+	/**
+	 * Limpia el progreso guardado.
+	 *
+	 * @param string $project_id ID del proyecto.
+	 */
+	public static function clear_progress( $project_id ) {
+		delete_transient( self::progress_key( $project_id ) );
+	}
+
+	/**
 	 * Descarga el zip del repositorio en staging y analiza su estructura.
 	 *
 	 * @param array  $project Datos del proyecto.
@@ -67,12 +125,26 @@ class DG_Deployer {
 	public static function stage( array $project, $ref = '' ) {
 		self::ensure_dirs();
 
+		self::set_progress(
+			$project['id'],
+			15,
+			'connect',
+			__( 'Conectando con la API de GitHub y verificando credenciales...', 'despliegagit' )
+		);
+
 		if ( empty( $ref ) ) {
 			$ref = ! empty( $project['branch'] ) ? $project['branch'] : 'main';
 		}
 
 		$token  = DG_Projects::token_for( $project );
 		$github = new DG_GitHub( $token );
+
+		self::set_progress(
+			$project['id'],
+			30,
+			'commit',
+			__( 'Obteniendo detalles del último commit en la rama...', 'despliegagit' )
+		);
 
 		// Obtener información del commit para trazabilidad.
 		$commit_info = $github->get_commit( $project['owner'], $project['repo'], $ref );
@@ -92,11 +164,26 @@ class DG_Deployer {
 		$tmp_zip  = $paths['tmp'] . '/' . $stage_id . '.zip';
 		$stage_dir = $paths['staging'] . '/' . $project['id'];
 
+		self::set_progress(
+			$project['id'],
+			50,
+			'download',
+			__( 'Descargando paquete comprimido del repositorio (.zip)...', 'despliegagit' )
+		);
+
 		// Descargar archivo ZIP.
 		$downloaded = $github->download_zip( $project['owner'], $project['repo'], $commit_info['sha'], $tmp_zip );
 		if ( is_wp_error( $downloaded ) ) {
+			self::clear_progress( $project['id'] );
 			return $downloaded;
 		}
+
+		self::set_progress(
+			$project['id'],
+			70,
+			'unzip',
+			__( 'Descomprimiendo y verificando integridad de archivos...', 'despliegagit' )
+		);
 
 		// Limpiar staging anterior del proyecto.
 		self::rmdir_recursive( $stage_dir );
@@ -107,11 +194,19 @@ class DG_Deployer {
 		@unlink( $tmp_zip );
 
 		if ( is_wp_error( $unzip_result ) ) {
+			self::clear_progress( $project['id'] );
 			return $unzip_result;
 		}
 
 		// GitHub mete todo dentro de un directorio raíz: owner-repo-sha/. Lo aplanamos.
 		self::flatten_single_root_dir( $stage_dir );
+
+		self::set_progress(
+			$project['id'],
+			85,
+			'inspect',
+			__( 'Analizando estructura de carpetas, temas, plugins o estáticos...', 'despliegagit' )
+		);
 
 		// Si se configuró un subdirectorio específico (ej: dist/, build/), lo usamos como raíz.
 		$effective_dir = $stage_dir;
@@ -154,6 +249,13 @@ class DG_Deployer {
 				'staged' => $stage_data,
 				'status' => 'staged',
 			)
+		);
+
+		self::set_progress(
+			$project['id'],
+			100,
+			'ready',
+			__( '¡Importación completada! Listo para previsualizar.', 'despliegagit' )
 		);
 
 		return $stage_data;

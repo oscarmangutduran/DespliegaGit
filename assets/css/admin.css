@@ -706,3 +706,256 @@
 	color: var(--dg-danger);
 }
 
+/* Botón Hero Secundario / Guardar e Importar */
+.button-hero-sm {
+	display: inline-flex !important;
+	align-items: center;
+	gap: 6px;
+	background: var(--dg-primary) !important;
+	border-color: var(--dg-primary) !important;
+	color: #ffffff !important;
+	font-weight: 600;
+	padding: 4px 14px !important;
+}
+
+/* Modal de Progreso de Importación */
+.dg-modal-progress {
+	max-width: 540px;
+	border: 1px solid #cbd5e1;
+	overflow: hidden;
+}
+
+.dg-progress-header {
+	background: #f8fafc;
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	padding: 20px 24px;
+}
+
+.dg-progress-header-icon {
+	width: 44px;
+	height: 44px;
+	border-radius: 10px;
+	background: #eff6ff;
+	border: 1px solid #bfdbfe;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+}
+
+.dg-progress-header-icon .dashicons {
+	font-size: 24px;
+	width: 24px;
+	height: 24px;
+	color: var(--dg-primary);
+}
+
+.dg-spin-pulse {
+	animation: dgPulse 1.6s infinite ease-in-out;
+}
+
+@keyframes dgPulse {
+	0% {
+		transform: scale(0.9);
+		opacity: 0.7;
+	}
+	50% {
+		transform: scale(1.1);
+		opacity: 1;
+	}
+	100% {
+		transform: scale(0.9);
+		opacity: 0.7;
+	}
+}
+
+.dg-progress-header-text h2 {
+	margin: 0 0 4px 0;
+	font-size: 18px;
+	font-weight: 700;
+	color: var(--dg-text-main);
+}
+
+.dg-progress-subtitle {
+	margin: 0;
+	font-size: 13px;
+	color: var(--dg-text-muted);
+	font-family: monospace;
+}
+
+.dg-progress-body {
+	padding: 24px;
+}
+
+/* Barra de Progreso */
+.dg-progress-bar-container {
+	margin-bottom: 24px;
+}
+
+.dg-progress-bar-track {
+	width: 100%;
+	height: 14px;
+	background: #f1f5f9;
+	border-radius: 9999px;
+	overflow: hidden;
+	border: 1px solid #e2e8f0;
+	box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.06);
+	position: relative;
+}
+
+.dg-progress-bar-fill {
+	height: 100%;
+	background: linear-gradient(90deg, #3b82f6 0%, #2563eb 50%, #1d4ed8 100%);
+	border-radius: 9999px;
+	transition: width 0.35s ease;
+	position: relative;
+	overflow: hidden;
+}
+
+.dg-progress-bar-glow {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background: linear-gradient(
+		90deg,
+		rgba(255, 255, 255, 0) 0%,
+		rgba(255, 255, 255, 0.4) 50%,
+		rgba(255, 255, 255, 0) 100%
+	);
+	animation: dgShimmer 1.8s infinite;
+}
+
+@keyframes dgShimmer {
+	0% {
+		transform: translateX(-100%);
+	}
+	100% {
+		transform: translateX(100%);
+	}
+}
+
+.dg-progress-meta {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-top: 10px;
+	font-size: 13px;
+}
+
+.dg-progress-status-text {
+	color: #334155;
+	font-weight: 500;
+}
+
+.dg-progress-percent {
+	font-weight: 700;
+	color: var(--dg-primary);
+	font-family: monospace;
+	font-size: 14px;
+}
+
+/* Lista de Pasos */
+.dg-progress-steps {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	border-top: 1px solid #f1f5f9;
+	padding-top: 18px;
+}
+
+.dg-step-item {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	opacity: 0.45;
+	transition: opacity 0.3s ease;
+}
+
+.dg-step-item.is-active {
+	opacity: 1;
+}
+
+.dg-step-item.is-completed {
+	opacity: 0.9;
+}
+
+.dg-step-marker {
+	width: 22px;
+	height: 22px;
+	border-radius: 50%;
+	background: #f1f5f9;
+	border: 1px solid #cbd5e1;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	margin-top: 1px;
+	transition: all 0.3s ease;
+}
+
+.dg-step-marker .dashicons {
+	font-size: 14px;
+	width: 14px;
+	height: 14px;
+	color: #94a3b8;
+}
+
+.dg-step-item.is-active .dg-step-marker {
+	background: #eff6ff;
+	border-color: #3b82f6;
+	box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+}
+
+.dg-step-item.is-active .dg-step-marker .dashicons {
+	color: #2563eb;
+}
+
+.dg-step-item.is-completed .dg-step-marker {
+	background: #ecfdf5;
+	border-color: #10b981;
+}
+
+.dg-step-item.is-completed .dg-step-marker .dashicons {
+	color: #059669;
+}
+
+.dg-step-info {
+	display: flex;
+	flex-direction: column;
+}
+
+.dg-step-info strong {
+	font-size: 13px;
+	color: #1e293b;
+	line-height: 1.3;
+}
+
+.dg-step-info small {
+	font-size: 11px;
+	color: #64748b;
+}
+
+.dg-progress-footer {
+	background: #f8fafc;
+	justify-content: center;
+	padding: 12px 20px;
+}
+
+.dg-progress-hint {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	color: #64748b;
+	font-size: 12px;
+}
+
+.dg-progress-hint .dashicons {
+	font-size: 14px;
+	width: 14px;
+	height: 14px;
+}
+
